@@ -22,8 +22,8 @@ With model results embedded:
     md = generate_report(
         arima_results=arima_diag,   # dict from arima_model.residual_diagnostics()
         garch_results=garch_diag,   # dict from garch_model.garch_diagnostics()
-        arima_order=(1, 1, 1),
-        garch_order=(1, 1),
+        arima_order=(4, 1, 3),
+        garch_order=(1, 2),
         save_path="outputs/reports/report.md",
     )
 """
@@ -113,12 +113,12 @@ def _section_header() -> str:
 def _section_data_source(meta: Optional[dict]) -> str:
     m = meta or {}
     code = m.get("index_code", "sh.000001")
-    train_start = m.get("train_start", "2000-01-01")
-    train_end = m.get("train_end", "2024-06-30")
-    test_start = m.get("test_start", "2024-07-01")
-    test_end = m.get("test_end", "2024-12-31")
-    n_train = m.get("n_train", "—")
-    n_test = m.get("n_test", "—")
+    train_start = m.get("train_start", "2016-01-05")
+    train_end = m.get("train_end", "2020-12-31")
+    test_start = m.get("test_start", "2021-01-05")
+    test_end = m.get("test_end", "2025-12-31")
+    n_train = m.get("n_train", 1217)
+    n_test = m.get("n_test", 1211)
 
     return (
         "## 1. Data Source\n\n"
@@ -178,7 +178,8 @@ def _section_modeling_workflow(
         "| 2 | `search_garch_order` | Grid-search GARCH(p, q) by AIC |\n"
         "| 3 | `fit_garch` | Fits `arch` library GARCH with chosen order |\n"
         "| 4 | `forecast_garch` | N-step-ahead variance and volatility forecasts |\n"
-        "| 5 | `garch_diagnostics` | Ljung-Box on standardized residuals + 4-panel figure |\n\n"
+        "| 5 | `rolling_forecast_garch` | 1-step-ahead rolling volatility forecast on the test period |\n"
+        "| 6 | `garch_diagnostics` | Ljung-Box on standardized residuals + 4-panel figure |\n\n"
         f"**Final GARCH order**: `{garch_str}`\n\n"
         "The two models are coupled: ARIMA captures the conditional mean of log-returns; "
         "GARCH models the remaining conditional heteroskedasticity in ARIMA residuals."
@@ -239,11 +240,19 @@ def _section_diagnostics(
         "Generated figures are saved to `outputs/figures/`:\n\n"
         "| Figure | Description |\n"
         "|--------|-------------|\n"
-        "| `returns.png` | Price level and daily log-returns over time |\n"
-        "| `rolling_stats.png` | Rolling mean and std of log-returns |\n"
-        "| `distribution.png` | Return histogram with KDE and normal overlay |\n"
-        "| `acf_pacf.png` | ACF and PACF of log-returns |\n"
-        "| `qq.png` | Q-Q plot of log-returns vs normal distribution |"
+        "| `eda_close_price.png` | Shanghai Composite closing price (full training period) |\n"
+        "| `eda_return_distribution.png` | Log-return histogram with KDE and normal fit |\n"
+        "| `eda_return_acf_pacf.png` | ACF and PACF of log-returns |\n"
+        "| `eda_return_qq.png` | Q-Q plot of log-returns vs normal distribution |\n"
+        "| `eda_close_acf_pacf.png` | ACF and PACF of log-close (non-stationary reference) |\n"
+        "| `arima_insample_fit.png` | ARIMA in-sample fitted values vs actual log-close |\n"
+        "| `arima_residual_diagnostics.png` | 4-panel ARIMA residual diagnostics |\n"
+        "| `arima_forecast_vs_actual.png` | Rolling 1-step-ahead ARIMA forecast vs actual |\n"
+        "| `garch_volatility_clustering.png` | Log-returns and squared returns (ARCH effect) |\n"
+        "| `garch_conditional_volatility.png` | GARCH conditional volatility time series |\n"
+        "| `garch_residual_diagnostics.png` | 4-panel GARCH standardized-residual diagnostics |\n"
+        "| `garch_forecast_vs_realized.png` | GARCH volatility forecast vs realized volatility |\n"
+        "| `garch_rolling_forecast_vs_realized.png` | Rolling GARCH forecast vs realized volatility |"
     )
 
     return "\n".join(lines)
@@ -332,3 +341,7 @@ def _format_lb_summary(lb: pd.DataFrame, label: str) -> str:
     return (
         f"\n**{label}** — p-value range: [{min_p:.4f}, {max_p:.4f}] — {verdict}\n"
     )
+
+
+if __name__ == '__main__':
+    generate_report()
