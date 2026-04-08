@@ -1,6 +1,6 @@
 # 上证综指波动率建模：ARIMA-GARCH 分析框架
 
-> 基于上证综合指数（sh.000001）日度收益率序列，构建完整的时间序列分析与波动率建模管线，涵盖数据采集、预处理、探索性分析、均值模型（ARIMA）和波动率模型（GARCH）全流程。
+> 基于上证综合指数（sh.000001）日度价格序列，构建完整的时间序列分析与波动率建模管线，涵盖数据采集、预处理、探索性分析、ARIMA 均值模型（对数收盘价）和 GARCH 波动率模型（对数收益率）全流程。
 
 [![Python](https://img.shields.io/badge/Python-3.13-blue.svg)](https://www.python.org/)
 [![Poetry](https://img.shields.io/badge/dependency-Poetry-cyan.svg)](https://python-poetry.org/)
@@ -27,11 +27,12 @@
 
 ## 项目背景
 
-A 股市场波动率建模对风险管理、期权定价和投资组合构建具有重要意义。本项目以**上证综合指数（000001.SH）**为研究对象，利用 2016—2020 年共 1,217 个交易日的日度 OHLCV 数据作为训练集，以 2021—2025 年 1,211 个交易日作为测试集，系统验证并实现以下假设：
+A 股市场波动率建模对风险管理、期权定价和投资组合构建具有重要意义。本项目以**上证综合指数（000001.SH）**为研究对象，以 2000—2024 年完整历史（5,932 个交易日）做 EDA，以 2016—2020 年（1,217 天）为训练集、2021—2025 年（1,211 天）为测试集，系统验证并实现以下假设：
 
-1. **价格水平非平稳**：对数收盘价含单位根，一阶差分（对数收益率）后平稳。
-2. **收益率存在波动聚集**：ARCH-LM 检验显著，适合 GARCH 族模型。
-3. **ARIMA-GARCH 联合建模**：ARIMA 捕捉条件均值线性结构，GARCH 建模条件方差异方差性。
+1. **价格水平非平稳**：对数收盘价含单位根（ADF p = 0.15），一阶差分（对数收益率）后平稳（ADF p < 1e-29）。
+2. **收益率存在波动聚集**：收益率平方序列 Ljung-Box 检验所有滞后 p < 0.05，ARCH 效应显著。
+3. **ARIMA 建模对数收盘价**：d=1 差分保证平稳，模型捕捉条件均值线性结构。
+4. **GARCH 建模对数收益率**：对条件异方差进行参数化，量化波动率持久性。
 
 ---
 
@@ -92,10 +93,13 @@ sse_price_volatility/
 |------|----|
 | 标的 | 上证综合指数 `sh.000001` |
 | 数据源 | Baostock（免费 A 股历史数据 API） |
+| EDA 数据集 | 2000-01-05 — 2024-06-28（5,932 个交易日，完整历史） |
 | 训练集 | 2016-01-05 — 2020-12-31（1,217 个交易日） |
 | 测试集 | 2021-01-05 — 2025-12-31（1,211 个交易日） |
 | 频率 | 日度 OHLCV |
 | 衍生特征 | `log_close = ln(close)`，`log_return = ln(Pₜ / Pₜ₋₁)` |
+
+> EDA（`01_eda.ipynb`）使用完整 2000—2024 历史刻画长期统计特性；ARIMA 与 GARCH 建模使用 2016—2020 训练集，以反映近期市场机制并控制计算量。
 
 原始数据保存于 `data/raw/`，经预处理管线输出至 `data/processed/`，全程**不覆盖原始文件**。
 
@@ -135,29 +139,34 @@ arima_model.py                     garch_model.py
 
 ### ARIMA 均值模型
 
-- 对 `log_return` 序列进行 ADF 检验，确认平稳后搜索最优阶数。
-- 以 AIC 为准则通过网格搜索或 `auto_arima` 确定 **(p, d, q)**。
-- **最终阶数：ARIMA(4, 1, 3)**（AIC = −7380.13，BIC = −7339.30）。
-- 残差 Ljung-Box 检验验证无显著自相关（所有滞后 p > 0.05）。
-- 支持 `rolling_forecast_arima` 在测试集上进行逐步 1-step-ahead 滚动预测。
+- 对 **`log_close`** 序列进行 ADF 检验（p = 0.15，非平稳），`prepare_series` 自动确定 d=1。
+- 以 AIC 为准则网格搜索 p ∈ {0…4}，q ∈ {0…4}，共 25 个候选模型。
+- **最终阶数：ARIMA(4, 1, 3)**（AIC = −7380.13，BIC = −7339.30；注：优化器报告 `converged=False`，参数估计需谨慎解读）。
+- 残差 Ljung-Box 检验：所有 20 个滞后 p > 0.05，残差近似白噪声 ✓。
+- 滚动预测：`rolling_forecast_arima` 以 `refit_every=5` 在测试集逐步重新拟合，1-step-ahead 预测。
+- **样本外评估（对数收盘价，2021—2025）**：MAE = 0.0119，RMSE = 0.0173，MAPE = 0.15%。
 
 ### GARCH 波动率模型
 
-- 对 ARIMA 残差序列进行 ARCH-LM 检验，确认存在波动聚集效应。
-- 网格搜索 GARCH(p, q)，以 AIC 选择最优阶数。
-- **最终阶数：GARCH(1, 2)**（AIC 准则，网格搜索范围 p, q ∈ {1, 2}）。
-- 标准化残差 Ljung-Box 检验验证条件方差结构已被充分捕捉。
-- 支持 `rolling_forecast_garch` 在测试集上进行逐步滚动波动率预测。
+- 对 **`log_return`** 序列进行 ARCH-LM 检验（收益率平方 LB 所有 10 滞后 p < 0.05）✓，确认波动聚集。
+- 网格搜索 GARCH(p, q)，p, q ∈ {1, 2}（AIC 准则）。
+- **最终阶数：GARCH(1, 2)**（AIC 最优）。
+- **波动率持久性 α + β = 0.9898**，近积分 GARCH，波动率冲击消散极缓。
+- 诊断：标准化残差平方 Ljung-Box 在滞后 1–3 仍显著（p < 0.05），提示模型未完全消除短期 ARCH 效应，建议后续考虑 GJR-GARCH 或 Student-t 分布。
+- 滚动预测：`rolling_forecast_garch` 在测试集上进行逐步滚动波动率预测。
 
 ---
 
 ## 关键结论
 
-1. **价格水平含单位根**：对数收盘价 ADF 检验无法拒绝原假设，一阶差分后收益率平稳，符合随机游走假设。
-2. **显著的波动聚集**：对数收益率的平方序列 Ljung-Box 检验 p < 0.05，ARCH 效应显著，GARCH 模型适用。
-3. **ARIMA 残差无显著自相关**：ARIMA(4,1,3) 残差 Ljung-Box 检验所有滞后 p > 0.05，均值结构捕捉充分。
-4. **GARCH(1,2) 消除条件异方差**：标准化残差平方项无显著自相关，联合模型充分刻画了条件均值与条件方差动态。
-5. **短期预测局限**：模型预测反映历史统计规律，**不构成任何投资建议或交易信号**。
+1. **价格水平含单位根**：对数收盘价 ADF p = 0.15（非平稳），对数收益率 ADF p < 1e-29（平稳），一阶差分足以消除单位根。
+2. **显著的波动聚集**：收益率平方序列 Ljung-Box 检验 10 个滞后全部 p < 0.05，ARCH 效应高度显著，GARCH 建模有充分依据。
+3. **ARIMA(4,1,3) 均值模型**：对数收盘价建模，AIC = −7380.13；残差 Ljung-Box 所有 20 滞后 p > 0.05（白噪声 ✓）；样本外 MAPE = 0.15%，跟踪误差极低。
+4. **GARCH(1,2) 基准波动率模型**：持久性 α+β = 0.9898，近积分 GARCH；标准化残差平方在滞后 2+ 仍显著（p < 0.05），对称正态 GARCH 未能完全消除 ARCH 效应 ⚠️
+5. **GJR-GARCH(1,2) 显著改善拟合**：ΔAIC = −205（−5697 vs −5491）。杠杆系数 γ = 0.018 > 0，确认负向冲击对波动率的放大效果更强（**杠杆效应**）；持久性降至 0.947。残差 ARCH 效应在短滞后仍部分残留，后续可尝试 EGARCH 或更高阶规格。
+6. **样本外定量评估**：在 1,211 个测试交易日上，GARCH vs GJR-GARCH 的 RMSE（vs |r|）分别为 0.0081 / 0.0081，MAE 为 0.0060 / 0.0061，QLIKE 损失为 −8.159 / **−8.178**（越小越好）。GJR-GARCH 在 QLIKE 指标上略优，两者差异较小。
+7. **VaR 回测通过 Kupiec 检验**：两个模型的 1% VaR 穿越率均为 1.07%（13 次穿越 / 1,211 天），5% VaR 穿越率均为 5.70%；Kupiec POF 检验 p 值分别为 0.80 和 0.28，均未拒绝原假设（H₀：穿越率 = 名义水平），模型风险估计总体校准良好。
+8. **短期预测局限**：模型预测反映历史统计规律，**不构成任何投资建议或交易信号**。
 
 ---
 
@@ -165,7 +174,7 @@ arima_model.py                     garch_model.py
 
 | 图表 | 说明 |
 |------|------|
-| `eda_close_price.png` | 上证综指收盘价走势（2016—2020 训练期） |
+| `eda_close_price.png` | 上证综指收盘价走势（2000—2024 完整历史） |
 | `eda_return_distribution.png` | 日度对数收益率分布（直方图 + KDE + 正态拟合） |
 | `eda_return_acf_pacf.png` | 收益率 ACF / PACF（确认短程自相关结构） |
 | `eda_close_acf_pacf.png` | 对数收盘价 ACF / PACF（非平稳参照） |
@@ -175,9 +184,14 @@ arima_model.py                     garch_model.py
 | `arima_forecast_vs_actual.png` | 滚动 1-step-ahead ARIMA 预测 vs 实际值 |
 | `garch_volatility_clustering.png` | 收益率及其平方序列（ARCH 效应可视化） |
 | `garch_conditional_volatility.png` | GARCH 条件波动率时间序列 |
-| `garch_residual_diagnostics.png` | GARCH 标准化残差四联诊断图 |
+| `garch_residual_diagnostics.png` | GARCH(1,2) 标准化残差四联诊断图 |
 | `garch_forecast_vs_realized.png` | GARCH 波动率预测 vs 已实现波动率 |
 | `garch_rolling_forecast_vs_realized.png` | 滚动 GARCH 波动率预测 vs 已实现波动率 |
+| `gjr_garch_residual_diagnostics.png` | GJR-GARCH(1,2) 标准化残差四联诊断图 |
+| `garch_vs_gjr_conditional_volatility.png` | GARCH vs GJR-GARCH 条件波动率对比 |
+| `gjr_garch_rolling_forecast_vs_realized.png` | GJR-GARCH 滚动预测 vs 已实现波动率（3 面板对比）|
+| `vol_forecast_scatter.png` | 预测波动率 vs \|收益率\|代理散点图（GARCH / GJR-GARCH）|
+| `var_backtest.png` | 1% / 5% VaR 穿越时间线图（GARCH 与 GJR-GARCH 对比）|
 
 所有图表保存于 `outputs/figures/`。
 
@@ -264,18 +278,22 @@ poetry run pytest tests/ -v
 
 **当前局限**
 
-- 模型假设对称波动响应，未捕捉**杠杆效应**（负收益放大波动）。
-- 默认使用正态误差分布，金融收益率通常具有**厚尾**特征。
+- **残差 ARCH 效应未完全消除**：GARCH(1,2) 和 GJR-GARCH(1,2) 的标准化残差平方在滞后 2+ 仍显著（p < 0.05），短期波动聚集未被完全捕捉。
+- **ARIMA 最优阶次未收敛**：ARIMA(4,1,3) 报告 `converged=False`，参数估计需谨慎解读，建议与已收敛的 ARIMA(3,1,4)（AIC = −7374.61）做对比验证。
+- **GJR-GARCH 杠杆项 t 统计量偏低**：γ 的 t-stat = 0.145，统计显著性不足，杠杆效应的经济意义需结合 AIC 改善量（ΔAIC = 205）综合判断。
+- 默认使用 Student-t 误差分布，GARCH 标准化残差峰度 > 5，**厚尾**特征仍明显。
+- 训练窗口 2016—2020 仅覆盖一个主要机制，测试期结构性变化可能降低样本外泛化能力。
 - 单变量模型，未引入宏观因子或跨市场信号。
 
 **后续改进方向**
 
-- [ ] **GJR-GARCH / EGARCH**：建模非对称波动率（杠杆效应）
-- [ ] **Student-t / Skewed-t 分布**：更好拟合厚尾特征，AIC/BIC 对比
-- [ ] **Walk-forward 回测**：滚动窗口样本外评估，更稳健的预测误差度量
+- [ ] **EGARCH**：对数方差方程天然捕捉非对称性，且无需非负参数约束
+- [ ] **GJR-GARCH(2,2)**：提高阶次以消除短滞后残余 ARCH 效应
+- [ ] **Skewed-t 分布**：进一步拟合偏度和峰度（kurtosis ≈ 5.9）
+- [x] **VaR 回测**：用条件波动率估计 1% / 5% VaR，Kupiec 检验覆盖率 ✓（已完成）
+- [ ] **收敛稳健性验证**：对比 ARIMA(4,1,3) 与 ARIMA(3,1,4)，评估实际预测差异
 - [ ] **Markov Switching GARCH**：捕捉波动率机制转换（如危机 vs 平稳期）
 - [ ] **DCC-GARCH**：与港股（恒生）、美股（S&P 500）联动分析
-- [ ] **自动化管线**：Prefect / Airflow 编排全流程（采集 → 预处理 → 建模 → 报告）
 
 ---
 

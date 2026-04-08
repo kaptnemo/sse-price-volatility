@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Literal, Optional
 
 import itertools
+from unittest import result
 
 import matplotlib.pyplot as plt
 import src.plot_config  # noqa: F401 — configures CJK font for all figures
@@ -202,6 +203,31 @@ def search_order(
     return df.sort_values(criterion).reset_index(drop=True)
 
 
+def choose_best_order(df, criterion="aic", delta=5):
+    """Choose the best ARIMA order. Consider both the information criterion and the complexity of the model.
+    """
+    df = df[df["converged"] == True].copy()
+    if df.empty:
+        raise ValueError("No valid ARIMA models found.")
+
+    # Step 1: 找最小 AIC
+    best_ic = df[criterion].min()
+
+    # Step 2: 保留“接近最优”的模型
+    candidates = df[df[criterion] <= best_ic + delta]
+
+    # Step 3: 在这些模型中选最简单的
+    candidates["complexity"] = candidates["p"] + candidates["q"]
+    print('candidates')
+    print(candidates)
+    best_row = candidates.sort_values(["complexity", criterion]).iloc[0]
+
+    print(f'最优阶次（AIC 最小）: ARIMA{best_row["p"]},{best_row["d"]},{best_row["q"]}')
+    print(f'  AIC = {best_row["aic"]:.2f},  BIC = {best_row["bic"]:.2f}')
+
+    return (int(best_row["p"]), int(best_row["d"]), int(best_row["q"]))
+
+
 # ---------------------------------------------------------------------------
 # 3. Model fitting
 # ---------------------------------------------------------------------------
@@ -303,61 +329,49 @@ def rolling_forecast_arima(
     alpha: float = 0.05,
     window: int | None = None,
     refit_every: int = 1,
+    verbose: bool = False,
 ) -> tuple[pd.DataFrame, ARIMAResultsWrapper]:
     """Generate 1-step-ahead rolling ARIMA forecasts.
 
-    At each forecast origin ``t`` in the test period, the model is re-fitted
-    on the most recent ``window`` observations and a 1-step-ahead forecast is
-    produced. The rolling window defaults to ``len(train_data)`` (fixed-length
-    sliding window).
-
-    The initial fit on ``train_data`` is also returned so the caller can reuse
-    it for in-sample diagnostics without an extra :func:`fit_arima` call.
+    Strategy
+    --------
+    - Initial fit on train_data.
+    - For each test point:
+      1) forecast next step using information up to t-1
+      2) record forecast against the realized value at t
+      3) update model state with realized value
+      4) every `refit_every` steps, fully re-fit on rolling/expanding window
 
     Parameters
     ----------
     train_data:
-        In-sample series used to establish the first training window.
+        In-sample training series.
     test_data:
-        Out-of-sample series. Forecasts are produced for each observation in
-        this series.
+        Out-of-sample series to forecast one step ahead.
     order:
-        Final ARIMA ``(p, d, q)`` order.
+        Final ARIMA order (p, d, q).
     alpha:
         Significance level for forecast confidence intervals.
     window:
-        Size of the rolling training window. If ``None`` (default), uses
-        ``len(train_data)`` so the window slides forward with fixed length
-        equal to the initial training period. Pass ``0`` to use an expanding
-        window (all data up to the current forecast origin).
+        Rolling window size. If None, uses len(train_data).
+        If 0, uses expanding window.
     refit_every:
-        Re-fit the model every *refit_every* steps (default ``1`` = refit at
-        every forecast origin). Larger values trade parameter freshness for
-        speed.
+        Full re-fit frequency. Must be >= 1.
+        - 1: re-fit every step
+        - >1: update every step, re-fit every k steps
+    verbose:
+        Whether to print periodic progress.
 
     Returns
     -------
-    forecast_df : pd.DataFrame
-        Indexed by the dates of the out-of-sample period. Columns:
-
-        * ``forecast`` – 1-step-ahead mean forecast
-        * ``lower_ci`` – lower confidence bound
-        * ``upper_ci`` – upper confidence bound
-        * ``actual`` – realized out-of-sample value
-
-    initial_result : ARIMAResultsWrapper
-        ARIMA result fitted on the full ``train_data``.
-
-    Raises
-    ------
-    ValueError
-        If ``test_data`` is empty, ``window`` is negative, or
-        ``refit_every`` < 1.
+    forecast_df, initial_result
     """
-    train = train_data.dropna()
-    test = test_data.dropna()
+    train = train_data.dropna().copy()
+    test = test_data.dropna().copy()
 
-    if len(test) == 0:
+    if train.empty:
+        raise ValueError("train_data must not be empty.")
+    if test.empty:
         raise ValueError("test_data must not be empty.")
     if window is not None and window < 0:
         raise ValueError("window must be >= 0 when provided.")
@@ -367,31 +381,55 @@ def rolling_forecast_arima(
     train_size = len(train)
     effective_window = train_size if window is None else window
 
-    s = pd.concat([train, test])
-    initial_result = fit_arima(train, order=order)
+    # Full history used for rolling-window re-fit decisions
+    full_series = pd.concat([train, test])
+
+    initial_result = fit_arima(
+        train,
+        order=order,
+    )
+    current_result = initial_result
 
     records: list[dict[str, float | pd.Timestamp]] = []
-    last_result: ARIMAResultsWrapper = initial_result
 
-    for i, t in enumerate(range(train_size, len(s))):
-        if effective_window > 0:
-            window_train = s.iloc[max(0, t - effective_window) : t]
-        else:
-            window_train = s.iloc[:t]
+    for i, t in enumerate(range(train_size, len(full_series)), start=1):
+        current_date = full_series.index[t]
+        actual_value = float(full_series.iloc[t])
 
-        if i > 0 and i % refit_every == 0:
-            last_result = fit_arima(window_train, order=order)
+        # 1-step forecast using only information up to t-1
+        forecast_row = forecast_arima(current_result, steps=1, alpha=alpha).iloc[0]
 
-        forecast_row = forecast_arima(last_result, steps=1, alpha=alpha).iloc[0]
         records.append(
             {
-                "date": s.index[t],
+                "date": current_date,
                 "forecast": float(forecast_row["forecast"]),
                 "lower_ci": float(forecast_row["lower_ci"]),
                 "upper_ci": float(forecast_row["upper_ci"]),
-                "actual": float(s.iloc[t]),
+                "actual": actual_value,
             }
         )
+
+        # Update with realized observation AFTER forecasting
+        new_obs = pd.Series([actual_value], index=[current_date])
+
+        should_refit = (i % refit_every == 0)
+
+        if should_refit:
+            if effective_window > 0:
+                refit_train = full_series.iloc[max(0, t + 1 - effective_window) : t + 1]
+            else:
+                refit_train = full_series.iloc[: t + 1]
+
+            if verbose and (i % max(refit_every, 30) == 0 or i == 1):
+                print(f"Refitting ARIMA at step {i}/{len(test)} on {current_date}...")
+
+            current_result = fit_arima(
+                refit_train,
+                order=order,
+            )
+        else:
+            # Cheap state update without full parameter re-estimation
+            current_result = current_result.append(new_obs, refit=False)
 
     forecast_df = pd.DataFrame(records).set_index("date")
     return forecast_df, initial_result

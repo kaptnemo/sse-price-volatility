@@ -177,8 +177,8 @@ def search_garch_order(
 def fit_garch(
     series: pd.Series,
     order: GarchOrder = (1, 1),
-    dist: str = "normal",
-    vol: str = "Garch",
+    model_type: str = "garch",  # "garch", "gjr", "egarch"
+    dist: str = "t",
     mean: str = "Constant",
 ) -> ARCHModelResult:
     """Fit a GARCH model with the specified order and return the result object.
@@ -189,6 +189,8 @@ def fit_garch(
         Stationary return series.
     order:
         ``(p, q)`` – GARCH lags (p) and ARCH lags (q).
+    model_type:
+        Model type: ``"garch"``, ``"gjr"``, ``"egarch"``.
     dist:
         Error distribution: ``"normal"``, ``"t"``, ``"skewt"``, ``"ged"``.
     vol:
@@ -214,9 +216,17 @@ def fit_garch(
         raise ValueError(
             f"Series has {len(s)} observations; need at least {min_obs} for GARCH{order}."
         )
+    if model_type == "garch":
+        am = arch_model(s, p=p, q=q, vol="GARCH", dist=dist, mean=mean)
 
-    model = arch_model(s, vol=vol, p=p, q=q, dist=dist, mean=mean)
-    result = model.fit(disp="off", show_warning=False)
+    elif model_type == "gjr":
+        am = arch_model(s, p=p, o=1, q=q, vol="GARCH", dist=dist, mean=mean)
+
+    elif model_type == "egarch":
+        am = arch_model(s, p=p, q=q, vol="EGARCH", dist=dist, mean=mean)
+    else:
+        raise ValueError(f"Unknown model_type: {model_type}")
+    result = am.fit(disp="off", show_warning=False)
     return result
 
 
@@ -275,8 +285,8 @@ def rolling_forecast_garch(
     train_data: pd.Series,
     test_data: pd.Series,
     order: GarchOrder = (1, 1),
+    model_type: str = "garch",
     dist: str = "t",
-    vol: str = "Garch",
     mean: str = "Constant",
     scale: float = 100.0,
     window: int | None = None,
@@ -302,10 +312,10 @@ def rolling_forecast_garch(
         observation in this series.
     order:
         ``(p, q)`` GARCH order.
+    model_type:
+        Model type (``"garch"``, ``"gjr"``, ``"egarch"``).
     dist:
         Error distribution passed to ``arch_model``.
-    vol:
-        Volatility process type (``"Garch"``, ``"GJR-Garch"``, ``"EGarch"``).
     mean:
         Mean model (``"Constant"``, ``"Zero"``, ``"AR"``).
     scale:
@@ -362,7 +372,7 @@ def rolling_forecast_garch(
         series=train * scale,
         order=order,
         dist=dist,
-        vol=vol,
+        model_type=model_type,
         mean=mean,
     )
 
@@ -381,7 +391,7 @@ def rolling_forecast_garch(
                 series=window_train * scale,
                 order=order,
                 dist=dist,
-                vol=vol,
+                model_type=model_type,
                 mean=mean,
             )
 

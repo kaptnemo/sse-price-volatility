@@ -6,7 +6,7 @@ src/garch_model.py
 
 # Requirements
 - Accept a stationary return-like series.
-- Fit at least a baseline GARCH specification.
+- Fit GARCH,EGARCH,GJR-GARCH models
 - Support comparison by AIC/BIC.
 - Use Rolling forecast, Accept train_data and test_data rolling window is the length of train_data
 - Output conditional volatility and forecast results.

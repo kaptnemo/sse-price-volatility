@@ -24,6 +24,7 @@ With model results embedded:
         garch_results=garch_diag,   # dict from garch_model.garch_diagnostics()
         arima_order=(4, 1, 3),
         garch_order=(1, 2),
+        arima_metrics={"MAE": 0.011919, "RMSE": 0.017323, "MAPE (%)": 0.14723},
         save_path="outputs/reports/report.md",
     )
 """
@@ -46,6 +47,7 @@ def generate_report(
     garch_order: Optional[tuple[int, int]] = None,
     arima_results: Optional[dict] = None,
     garch_results: Optional[dict] = None,
+    arima_metrics: Optional[dict] = None,
     data_description: Optional[dict] = None,
     save_path: Optional[str | Path] = None,
 ) -> str:
@@ -63,10 +65,14 @@ def generate_report(
     garch_results:
         Dict returned by :func:`garch_model.garch_diagnostics`.
         Keys used: ``summary_stats``, ``ljung_box``, ``ljung_box_sq``.
+    arima_metrics:
+        Optional dict of out-of-sample evaluation metrics for ARIMA, e.g.
+        ``{"MAE": 0.011919, "RMSE": 0.017323, "MAPE (%)": 0.14723}``.
     data_description:
         Optional dict with dataset metadata. Supported keys:
         ``train_start``, ``train_end``, ``test_start``, ``test_end``,
-        ``n_train``, ``n_test``, ``index_code``.
+        ``n_train``, ``n_test``, ``index_code``,
+        ``eda_start``, ``eda_end``, ``n_eda``.
     save_path:
         If provided, the report is written to this path (Markdown file).
         Parent directories are created automatically.
@@ -81,7 +87,7 @@ def generate_report(
         _section_data_source(data_description),
         _section_preprocessing(),
         _section_modeling_workflow(arima_order, garch_order),
-        _section_diagnostics(arima_results, garch_results),
+        _section_diagnostics(arima_results, garch_results, arima_metrics),
         _section_conclusions(),
         _section_limitations(),
         _section_future_improvements(),
@@ -105,14 +111,17 @@ def generate_report(
 def _section_header() -> str:
     return (
         "# Shanghai Composite Index: ARIMA-GARCH Analysis\n\n"
-        "> **Technical Report** — Time-series modeling of daily log-returns "
-        "using ARIMA (mean) and GARCH (volatility) models."
+        "> **Technical Report** — Time-series modeling of the Shanghai Composite Index "
+        "using ARIMA (log-close mean model) and GARCH (log-return volatility model)."
     )
 
 
 def _section_data_source(meta: Optional[dict]) -> str:
     m = meta or {}
     code = m.get("index_code", "sh.000001")
+    eda_start = m.get("eda_start", "2000-01-05")
+    eda_end = m.get("eda_end", "2024-06-28")
+    n_eda = m.get("n_eda", 5932)
     train_start = m.get("train_start", "2016-01-05")
     train_end = m.get("train_end", "2020-12-31")
     test_start = m.get("test_start", "2021-01-05")
@@ -124,10 +133,15 @@ def _section_data_source(meta: Optional[dict]) -> str:
         "## 1. Data Source\n\n"
         f"- **Index**: Shanghai Stock Exchange Composite Index (`{code}`)\n"
         f"- **Provider**: Baostock (open-source A-share historical data API)\n"
+        f"- **EDA period**: {eda_start} – {eda_end} ({n_eda} trading days, full history)\n"
         f"- **Training period**: {train_start} – {train_end} ({n_train} trading days)\n"
         f"- **Test period**: {test_start} – {test_end} ({n_test} trading days)\n"
         "- **Frequency**: Daily OHLCV (open, high, low, close, volume, amount)\n"
-        "- **Raw files**: `data/raw/train_data_*.csv`, `data/raw/test_data_*.csv`"
+        "- **Raw files**: `data/raw/train_data_*.csv`, `data/raw/test_data_*.csv`\n\n"
+        "> EDA (notebook `01_eda.ipynb`) uses the full 2000–2024 history to characterise "
+        "the long-run statistical properties of the index.  ARIMA and GARCH models are "
+        "fitted on the shorter 2016–2020 window to keep computation tractable and reflect "
+        "more recent market regimes."
     )
 
 
@@ -181,14 +195,17 @@ def _section_modeling_workflow(
         "| 5 | `rolling_forecast_garch` | 1-step-ahead rolling volatility forecast on the test period |\n"
         "| 6 | `garch_diagnostics` | Ljung-Box on standardized residuals + 4-panel figure |\n\n"
         f"**Final GARCH order**: `{garch_str}`\n\n"
-        "The two models are coupled: ARIMA captures the conditional mean of log-returns; "
-        "GARCH models the remaining conditional heteroskedasticity in ARIMA residuals."
+        "The two models are coupled: ARIMA captures the conditional mean of the "
+        "**log-close** price level (d=1 differencing enforces stationarity); "
+        "GARCH models the conditional heteroskedasticity of **log-returns** "
+        "(ARIMA residuals / direct return series)."
     )
 
 
 def _section_diagnostics(
     arima_results: Optional[dict],
     garch_results: Optional[dict],
+    arima_metrics: Optional[dict] = None,
 ) -> str:
     lines = ["## 4. Diagnostics and Evaluation"]
 
@@ -213,8 +230,18 @@ def _section_diagnostics(
             "- Residual distribution should be approximately normal (Q-Q, histogram)."
         )
 
+    # --- ARIMA out-of-sample evaluation ---
+    lines.append("\n### 4.2 ARIMA Out-of-Sample Evaluation (log-close)")
+    if arima_metrics:
+        lines.append(_format_metrics_table(arima_metrics))
+    else:
+        lines.append(
+            "\n*No evaluation metrics provided.  Pass `arima_metrics` dict to "
+            "`generate_report()`.  Expected keys: `MAE`, `RMSE`, `MAPE (%)`.*"
+        )
+
     # --- GARCH diagnostics ---
-    lines.append("\n### 4.2 GARCH Standardized-Residual Diagnostics")
+    lines.append("\n### 4.3 GARCH Standardized-Residual Diagnostics")
     if garch_results:
         gstats: pd.Series = garch_results.get("summary_stats", pd.Series(dtype=float))
         glb: pd.DataFrame = garch_results.get("ljung_box", pd.DataFrame())
@@ -232,15 +259,17 @@ def _section_diagnostics(
             "no remaining serial correlation.\n"
             "- Ljung-Box test on squared standardized residuals: p-values > 0.05 indicate "
             "the GARCH model has adequately captured volatility clustering.\n"
-            "- Standardized residuals should be approximately N(0, 1)."
+            "- Standardized residuals should be approximately N(0, 1).\n"
+            "- Note: residual ARCH effects at short lags suggest an asymmetric variant "
+            "(GJR-GARCH / EGARCH) or heavier-tailed distribution may improve fit."
         )
 
     lines.append(
-        "\n### 4.3 Diagnostic Figures\n\n"
+        "\n### 4.4 Diagnostic Figures\n\n"
         "Generated figures are saved to `outputs/figures/`:\n\n"
         "| Figure | Description |\n"
         "|--------|-------------|\n"
-        "| `eda_close_price.png` | Shanghai Composite closing price (full training period) |\n"
+        "| `eda_close_price.png` | Shanghai Composite closing price (2000–2024 full history) |\n"
         "| `eda_return_distribution.png` | Log-return histogram with KDE and normal fit |\n"
         "| `eda_return_acf_pacf.png` | ACF and PACF of log-returns |\n"
         "| `eda_return_qq.png` | Q-Q plot of log-returns vs normal distribution |\n"
@@ -250,9 +279,14 @@ def _section_diagnostics(
         "| `arima_forecast_vs_actual.png` | Rolling 1-step-ahead ARIMA forecast vs actual |\n"
         "| `garch_volatility_clustering.png` | Log-returns and squared returns (ARCH effect) |\n"
         "| `garch_conditional_volatility.png` | GARCH conditional volatility time series |\n"
-        "| `garch_residual_diagnostics.png` | 4-panel GARCH standardized-residual diagnostics |\n"
+        "| `garch_residual_diagnostics.png` | 4-panel GARCH(1,2) standardized-residual diagnostics |\n"
         "| `garch_forecast_vs_realized.png` | GARCH volatility forecast vs realized volatility |\n"
-        "| `garch_rolling_forecast_vs_realized.png` | Rolling GARCH forecast vs realized volatility |"
+        "| `garch_rolling_forecast_vs_realized.png` | Rolling GARCH forecast vs realized volatility |\n"
+        "| `gjr_garch_residual_diagnostics.png` | 4-panel GJR-GARCH(1,2) standardized-residual diagnostics |\n"
+        "| `garch_vs_gjr_conditional_volatility.png` | Conditional volatility comparison: GARCH vs GJR-GARCH |\n"
+        "| `gjr_garch_rolling_forecast_vs_realized.png` | GJR-GARCH rolling forecast vs realized volatility (3-panel) |\n"
+        "| `vol_forecast_scatter.png` | Predicted volatility vs |return| proxy scatter plots |\n"
+        "| `var_backtest.png` | 1%/5% VaR breach timeline for GARCH and GJR-GARCH |"
     )
 
     return "\n".join(lines)
@@ -262,18 +296,35 @@ def _section_conclusions() -> str:
     return (
         "## 5. Conclusions\n\n"
         "1. **Non-stationarity of price levels**: The Shanghai Composite log-close series "
-        "is integrated of order 1. First-differencing (log-returns) yields a stationary series, "
-        "consistent with the efficient-market hypothesis.\n"
-        "2. **Volatility clustering**: Log-returns show significant ARCH effects (Ljung-Box "
-        "on squared returns, p < 0.05), justifying the GARCH extension.\n"
-        "3. **ARIMA mean model**: The fitted ARIMA model captures the linear autocorrelation "
-        "structure in log-returns.  Residual Ljung-Box tests confirm the absence of "
-        "significant serial correlation in the residuals.\n"
-        "4. **GARCH volatility model**: The fitted GARCH model accounts for the "
-        "heteroskedasticity remaining in ARIMA residuals.  Ljung-Box tests on standardized "
-        "residuals and their squares confirm that the joint model adequately describes "
-        "the conditional mean and variance dynamics.\n"
-        "5. **Forecast interpretation**: Short-horizon forecasts reflect the model's "
+        "is integrated of order 1 (ADF p = 0.15 on close; p < 1e-29 on log-returns). "
+        "First-differencing yields a stationary series consistent with a random walk.\n"
+        "2. **Volatility clustering**: Log-returns show highly significant ARCH effects "
+        "(Ljung-Box on squared returns, p < 0.05 for all 10 lags), justifying the GARCH extension.\n"
+        "3. **ARIMA mean model** (log-close, d=1): ARIMA(4,1,3) achieves the lowest AIC "
+        "(−7380.13) on the 2016–2020 training set. Residual Ljung-Box tests confirm "
+        "white-noise residuals (all lags p > 0.05). Out-of-sample on 2021–2025: "
+        "MAE = 0.0119, RMSE = 0.0173, MAPE = 0.15 %.\n"
+        "4. **GARCH volatility model** (log-returns): GARCH(1,2) is selected by AIC. "
+        "Volatility persistence α+β = 0.99, indicating near-integrated GARCH dynamics. "
+        "Squared standardized residuals show significant autocorrelation at lags 2+ "
+        "(Ljung-Box p < 0.05), suggesting residual ARCH effects remain.\n"
+        "5. **GJR-GARCH improves fit substantially**: GJR-GARCH(1,2) reduces AIC by 205 "
+        "points (−5697 vs −5491) over symmetric GARCH. The leverage coefficient "
+        "γ = 0.018 > 0 confirms that negative return shocks amplify volatility more than "
+        "positive shocks, consistent with the leverage effect in equity markets. "
+        "Volatility persistence decreases to α + γ/2 + β = 0.947. Residual ARCH effects "
+        "at short lags persist in both models, pointing to higher-order or asymmetric "
+        "distributional extensions as next steps.\n"
+        "6. **Out-of-sample quantitative evaluation (1,211 test days)**: Predicted volatility "
+        "is evaluated against |r_t| proxy. RMSE: GARCH = 0.0081, GJR-GARCH = 0.0081 "
+        "(negligible difference). QLIKE loss (Patton 2011, scale-free): GARCH = −8.159, "
+        "GJR-GARCH = −8.178 (lower is better); GJR-GARCH is marginally preferred under QLIKE.\n"
+        "7. **VaR backtesting (Kupiec POF test)**: Both models produce well-calibrated risk "
+        "estimates. At the 1% level: 13 breaches / 1,211 days (rate = 1.07%), "
+        "Kupiec LR = 0.065, p = 0.80 — H₀ (breach rate = nominal level) not rejected. "
+        "At the 5% level: 69 breaches (rate = 5.70%), p = 0.28 — not rejected. "
+        "Both GARCH and GJR-GARCH pass all four Kupiec tests.\n"
+        "8. **Forecast interpretation**: Short-horizon forecasts reflect the model's "
         "learned conditional structure; they should not be interpreted as reliable "
         "directional signals for trading purposes."
     )
@@ -282,14 +333,22 @@ def _section_conclusions() -> str:
 def _section_limitations() -> str:
     return (
         "## 6. Limitations\n\n"
+        "- **Residual ARCH effects in both GARCH variants**: Ljung-Box on squared "
+        "standardized residuals rejects white noise at lags 2+ (p < 0.05) for both "
+        "GARCH(1,2) and GJR-GARCH(1,2). GJR-GARCH improves AIC by 205 points but does "
+        "not fully eliminate short-lag clustering; EGARCH or higher-order specifications "
+        "may be needed.\n"
+        "- **Convergence of best ARIMA order**: ARIMA(4,1,3) is selected by AIC but "
+        "reports `converged=False`; parameter estimates should be interpreted with caution.\n"
         "- **Model class**: ARIMA-GARCH assumes a linear conditional mean and a "
         "symmetric variance equation.  Asymmetric volatility responses (leverage effects) "
         "are not captured unless an asymmetric variant (e.g., GJR-GARCH, EGARCH) is used.\n"
         "- **Distributional assumption**: A normal error distribution is used by default. "
-        "Financial returns often exhibit heavier tails; a Student-t or skewed-t "
-        "distribution may provide a better fit.\n"
-        "- **Stationarity assumption**: The model relies on stable statistical properties "
-        "over time. Structural breaks (e.g., market crises) may violate this assumption.\n"
+        "Financial returns often exhibit heavier tails (observed kurtosis ≈ 5.9 in GARCH "
+        "standardized residuals); a Student-t or skewed-t distribution may provide a better fit.\n"
+        "- **Training window**: The 2016–2020 window covers only one major volatility regime "
+        "(post-2015 crash recovery). Structural breaks in the test period may reduce "
+        "out-of-sample validity.\n"
         "- **No exogenous variables**: The model is univariate and does not incorporate "
         "macroeconomic variables, news sentiment, or cross-market signals.\n"
         "- **Out-of-sample evaluation**: Evaluation metrics on the held-out test set "
@@ -300,12 +359,14 @@ def _section_limitations() -> str:
 def _section_future_improvements() -> str:
     return (
         "## 7. Future Improvements\n\n"
-        "- **Asymmetric GARCH**: Evaluate GJR-GARCH or EGARCH to capture the leverage effect "
-        "(negative returns tend to increase volatility more than positive ones).\n"
-        "- **Heavy-tailed distributions**: Fit the GARCH model with Student-t or skewed-t "
-        "innovations and compare AIC/BIC against the normal baseline.\n"
-        "- **Rolling / expanding window**: Implement a walk-forward evaluation framework "
-        "to assess forecast accuracy across the test period.\n"
+        "- **Asymmetric GARCH**: Evaluate EGARCH to capture the leverage effect "
+        "without non-negativity constraints on variance parameters.\n"
+        "- **Higher-order GARCH**: GJR-GARCH(2,2) may eliminate residual short-lag "
+        "ARCH effects present in both current variants.\n"
+        "- **Heavy-tailed distributions**: Fit the GARCH model with skewed-t "
+        "innovations to better capture asymmetry and excess kurtosis (≈ 5.9).\n"
+        "- **ARIMA convergence robustness**: Compare ARIMA(4,1,3) (non-converged) with "
+        "ARIMA(3,1,4) to assess practical forecast impact of the convergence issue.\n"
         "- **Regime switching**: Consider Markov-switching GARCH to capture structural breaks "
         "in volatility regimes.\n"
         "- **Multivariate extensions**: Explore VAR or DCC-GARCH to model co-movements "
@@ -318,6 +379,14 @@ def _section_future_improvements() -> str:
 # ---------------------------------------------------------------------------
 # Formatting helpers
 # ---------------------------------------------------------------------------
+
+
+def _format_metrics_table(metrics: dict) -> str:
+    """Format an evaluation-metrics dict into a Markdown table."""
+    rows = "| Metric | Value |\n|--------|-------|\n"
+    for name, val in metrics.items():
+        rows += f"| {name} | {val:.6f} |\n"
+    return "\n" + rows
 
 
 def _format_summary_stats_table(stats: pd.Series, label: str = "Stats") -> str:
