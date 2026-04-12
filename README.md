@@ -173,7 +173,7 @@ arima_model.py                     garch_model.py
 4. **GARCH(1,2) 基准波动率模型**：持久性 α+β = 0.9898，近积分 GARCH；标准化残差平方在滞后 2+ 仍显著（p < 0.05），对称正态 GARCH 未能完全消除 ARCH 效应 ⚠️
 5. **GJR-GARCH(1,2) 显著改善拟合**：ΔAIC = −205（−5697 vs −5491）。杠杆系数 γ = 0.018 > 0，确认负向冲击对波动率的放大效果更强（**杠杆效应**）；持久性降至 0.947。残差 ARCH 效应在短滞后仍部分残留，后续可尝试 EGARCH 或更高阶规格。
 6. **样本外定量评估**：在 1,211 个测试交易日上，GARCH vs GJR-GARCH 的 RMSE（vs |r|）分别为 0.0075 / 0.0076，MAE 为 0.0058 / 0.0058，QLIKE 损失为 **−8.348** / −8.337（越小越好）。GARCH(1,2) 在 RMSE 和 QLIKE 指标上略优，两者差异较小。
-7. **VaR 回测通过 Kupiec 检验**：GARCH 1% VaR 穿越率 = 0.99%（12 次 / 1,211 天，p = 0.97），GJR-GARCH 1% VaR 穿越率 = 0.91%（11 次，p = 0.74）；GARCH 5% 穿越率 = 5.45%（66 次，p = 0.48），GJR-GARCH 5% 穿越率 = 5.53%（67 次，p = 0.40）；Kupiec POF 检验均未拒绝原假设（H₀：穿越率 = 名义水平），模型风险估计总体校准良好。
+7. **VaR 回测：Kupiec + Christoffersen 检验全部通过**：GARCH 1% VaR 穿越率 = 0.99%（12 次 / 1,211 天，Kupiec p = 0.97），GJR-GARCH 1% VaR 穿越率 = 0.91%（11 次，p = 0.74）；GARCH 5% 穿越率 = 5.45%（66 次，p = 0.48），GJR-GARCH 5% 穿越率 = 5.53%（67 次，p = 0.40）。进一步通过 Christoffersen（1998）条件覆盖检验：GARCH 1% LR_ind = 2.63（p_ind = 0.10），LR_cc = 2.63（p_cc = 0.27）；GJR-GARCH 1% LR_cc = 0.31（p_cc = 0.86）——独立性与条件覆盖原假设均未拒绝，两模型 VaR 违约不存在时序聚集，校准质量良好。
 8. **短期预测局限**：模型预测反映历史统计规律，**不构成任何投资建议或交易信号**。
 
 ---
@@ -262,6 +262,7 @@ vol_fc = forecast_garch(garch_res, steps=10)
 | `eda.py` | 描述统计、ADF 检验、Ljung-Box 检验、时序图/分布图/ACF/Q-Q 图 |
 | `arima_model.py` | 平稳性检查、阶数搜索（AIC/BIC）、模型拟合、预测、残差诊断 |
 | `garch_model.py` | ARCH 效应检验、阶数搜索、模型拟合、方差预测、标准化残差诊断 |
+| `evaluate.py` | 点预测指标（MAE/RMSE/MAPE）、波动率指标（RMSE/QLIKE）、VaR 回测（Kupiec POF + Christoffersen CC）|
 | `baostock_helper.py` | Baostock 登录/登出及历史行情下载封装 |
 | `sh_index_ingest.py` | 端到端数据摄取脚本（调用 helper → 落盘 CSV） |
 | `report.py` | 汇总模型结果，生成 Markdown 分析报告 |
@@ -297,7 +298,7 @@ poetry run pytest tests/ -v
 - [ ] **EGARCH**：对数方差方程天然捕捉非对称性，且无需非负参数约束
 - [ ] **GJR-GARCH(2,2)**：提高阶次以消除短滞后残余 ARCH 效应
 - [ ] **Skewed-t 分布**：进一步拟合偏度和峰度（kurtosis ≈ 5.9）
-- [x] **VaR 回测**：用条件波动率估计 1% / 5% VaR，Kupiec 检验覆盖率 ✓（已完成）
+- [x] **VaR 回测**：Kupiec POF + Christoffersen CC 条件覆盖检验，全部通过 ✓（已完成）
 - [x] **收敛稳健性验证**：`choose_best_order` 已排除未收敛的 ARIMA(4,1,3)，实际采用 ARIMA(3,1,4)（已完成）
 - [ ] **Markov Switching GARCH**：捕捉波动率机制转换（如危机 vs 平稳期）
 - [ ] **DCC-GARCH**：与港股（恒生）、美股（S&P 500）联动分析

@@ -289,6 +289,19 @@ def _section_diagnostics(
         "| `var_backtest.png` | 1%/5% VaR breach timeline for GARCH and GJR-GARCH |"
     )
 
+    lines.append(
+        "\n### 4.5 VaR Backtesting Summary (Kupiec POF + Christoffersen CC)\n\n"
+        "1,211 out-of-sample trading days (2021-01-04 to 2025-12-31).\n\n"
+        "| Model | α | Expected | Actual | Rate | Kupiec p | LR_ind | p_ind | LR_cc | p_cc | Pass |\n"
+        "|-------|---|----------|--------|------|----------|--------|-------|-------|------|------|\n"
+        "| GARCH(1,2) | 1% | 12.1 | 12 | 0.99% | 0.9746 | 2.6298 | 0.1049 | 2.6306 | 0.2684 | ✓ |\n"
+        "| GARCH(1,2) | 5% | 60.6 | 66 | 5.45% | 0.4785 | 0.5501 | 0.4583 | 1.0620 | 0.5880 | ✓ |\n"
+        "| GJR-GARCH(1,2) | 1% | 12.1 | 11 | 0.91% | 0.7447 | 0.2018 | 0.6532 | 0.3060 | 0.8581 | ✓ |\n"
+        "| GJR-GARCH(1,2) | 5% | 60.6 | 67 | 5.53% | 0.4027 | 0.4586 | 0.4983 | 1.1700 | 0.5571 | ✓ |\n\n"
+        "All 8 tests pass at 5% significance. Christoffersen independence (LR_ind) and "
+        "conditional coverage (LR_cc) H₀ not rejected: VaR breaches show no temporal clustering."
+    )
+
     return "\n".join(lines)
 
 
@@ -320,12 +333,14 @@ def _section_conclusions() -> str:
         "is evaluated against |r_t| proxy. RMSE: GARCH = 0.0075, GJR-GARCH = 0.0076. "
         "QLIKE loss (Patton 2011, scale-free): GARCH = −8.348, GJR-GARCH = −8.337 "
         "(lower is better); GARCH(1,2) is marginally preferred under both RMSE and QLIKE.\n"
-        "7. **VaR backtesting (Kupiec POF test)**: Both models produce well-calibrated risk "
-        "estimates. GARCH 1% VaR: 12 breaches / 1,211 days (rate = 0.99%), p = 0.97 — "
-        "H₀ not rejected. GJR-GARCH 1% VaR: 11 breaches (rate = 0.91%), p = 0.74 — "
-        "not rejected. GARCH 5% VaR: 66 breaches (rate = 5.45%), p = 0.48 — not rejected. "
-        "GJR-GARCH 5% VaR: 67 breaches (rate = 5.53%), p = 0.40 — not rejected. "
-        "Both GARCH and GJR-GARCH pass all four Kupiec tests.\n"
+        "7. **VaR backtesting (Kupiec POF + Christoffersen CC)**: Both models pass all "
+        "eight backtests. Kupiec: GARCH 1% VaR — 12 breaches / 1,211 days (rate = 0.99%), "
+        "p = 0.97; GJR-GARCH 1% — 11 breaches (rate = 0.91%), p = 0.74; GARCH 5% — "
+        "66 breaches (rate = 5.45%), p = 0.48; GJR-GARCH 5% — 67 breaches (rate = 5.53%), "
+        "p = 0.40. Christoffersen (1998) Conditional Coverage: GARCH 1% LR_ind = 2.63 "
+        "(p_ind = 0.10), LR_cc = 2.63 (p_cc = 0.27); GJR-GARCH 1% LR_cc = 0.31 "
+        "(p_cc = 0.86). Independence and conditional coverage H₀ not rejected for any "
+        "model–level combination; VaR breaches show no temporal clustering.\n"
         "8. **Forecast interpretation**: Short-horizon forecasts reflect the model's "
         "learned conditional structure; they should not be interpreted as reliable "
         "directional signals for trading purposes."

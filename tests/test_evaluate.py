@@ -10,6 +10,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from src.evaluate import (
+    christoffersen_cc,
     compare_vol_forecasts,
     compute_var_t,
     evaluate_point_forecast,
@@ -233,3 +234,120 @@ class TestVarBacktest:
         bad_df = rolling_df.drop(columns=["predicted_volatility"])
         with pytest.raises(ValueError, match="missing required columns"):
             var_backtest(bad_df, returns, nu=10.0)
+
+
+# ---------------------------------------------------------------------------
+# 7. christoffersen_cc
+# ---------------------------------------------------------------------------
+
+class TestChristoffersenCC:
+    def test_returns_dict_with_required_keys(self):
+        hits = np.array([0, 1, 0, 0, 1, 0, 0, 0, 1, 0], dtype=float)
+        result = christoffersen_cc(hits, alpha=0.01)
+        for key in ("n_00", "n_01", "n_10", "n_11", "pi_01", "pi_11",
+                    "LR_uc", "p_uc", "LR_ind", "p_ind", "LR_cc", "p_cc"):
+            assert key in result
+
+    def test_transition_counts_sum_to_T_minus_1(self):
+        hits = np.array([0, 1, 0, 0, 1, 1, 0, 0, 1, 0], dtype=float)
+        r = christoffersen_cc(hits, alpha=0.01)
+        assert r["n_00"] + r["n_01"] + r["n_10"] + r["n_11"] == len(hits) - 1
+
+    def test_known_transition_counts(self):
+        # hits = [0,1,0,1,0,1] → pairs: (0,1),(1,0),(0,1),(1,0),(0,1)
+        # n_00=0, n_01=3, n_10=2, n_11=0
+        hits = np.array([0, 1, 0, 1, 0, 1], dtype=float)
+        r = christoffersen_cc(hits, alpha=0.5)
+        assert r["n_00"] == 0
+        assert r["n_01"] == 3
+        assert r["n_10"] == 2
+        assert r["n_11"] == 0
+
+    def test_all_zeros_no_breach(self):
+        hits = np.zeros(100, dtype=float)
+        r = christoffersen_cc(hits, alpha=0.01)
+        assert r["n_01"] == 0
+        assert r["n_11"] == 0
+        assert r["pi_01"] == 0.0
+        assert r["pi_11"] == 0.0
+
+    def test_all_ones_all_breach(self):
+        hits = np.ones(100, dtype=float)
+        r = christoffersen_cc(hits, alpha=0.99)
+        assert r["n_00"] == 0
+        assert r["n_10"] == 0
+
+    def test_p_values_in_unit_interval(self):
+        rng = np.random.default_rng(0)
+        hits = (rng.uniform(size=200) < 0.01).astype(float)
+        r = christoffersen_cc(hits, alpha=0.01)
+        assert 0 <= r["p_uc"] <= 1
+        assert 0 <= r["p_ind"] <= 1
+        assert 0 <= r["p_cc"] <= 1
+
+    def test_lr_cc_equals_lr_uc_plus_lr_ind(self):
+        rng = np.random.default_rng(1)
+        hits = (rng.uniform(size=300) < 0.05).astype(float)
+        r = christoffersen_cc(hits, alpha=0.05)
+        assert abs(r["LR_cc"] - (r["LR_uc"] + r["LR_ind"])) < 1e-3  # rounding to 4dp
+
+    def test_well_calibrated_model_does_not_reject(self):
+        # With ~1% breach rate, CC test should not reject at 5%
+        rng = np.random.default_rng(42)
+        hits = (rng.uniform(size=1200) < 0.01).astype(float)
+        r = christoffersen_cc(hits, alpha=0.01)
+        assert r["p_cc"] > 0.05
+
+    def test_perfectly_clustered_breaches_rejects_independence(self):
+        # 50 consecutive breaches then 150 non-breaches → strong clustering
+        hits = np.array([1.0] * 50 + [0.0] * 150)
+        r = christoffersen_cc(hits, alpha=0.25)
+        # pi_11 >> pi_01 → independence rejected
+        assert r["p_ind"] < 0.05
+
+    def test_accepts_pandas_series(self):
+        s = pd.Series([0, 0, 1, 0, 0, 1, 0, 0, 0, 1], dtype=float)
+        r = christoffersen_cc(s, alpha=0.01)
+        assert isinstance(r, dict)
+
+    def test_invalid_alpha_raises(self):
+        hits = np.zeros(50, dtype=float)
+        with pytest.raises(ValueError, match="alpha"):
+            christoffersen_cc(hits, alpha=0.0)
+        with pytest.raises(ValueError, match="alpha"):
+            christoffersen_cc(hits, alpha=1.0)
+
+    def test_too_short_raises(self):
+        with pytest.raises(ValueError):
+            christoffersen_cc(np.array([1.0]), alpha=0.01)
+
+    def test_empty_raises(self):
+        with pytest.raises(ValueError):
+            christoffersen_cc(np.array([]), alpha=0.01)
+
+    def test_lr_statistics_non_negative(self):
+        rng = np.random.default_rng(99)
+        hits = (rng.uniform(size=500) < 0.05).astype(float)
+        r = christoffersen_cc(hits, alpha=0.05)
+        assert r["LR_uc"] >= 0
+        assert r["LR_cc"] >= 0
+
+
+# ---------------------------------------------------------------------------
+# 8. var_backtest – CC columns
+# ---------------------------------------------------------------------------
+
+class TestVarBacktestCC:
+    def test_cc_columns_present(self, rolling_df, returns):
+        result = var_backtest(rolling_df, returns, nu=10.0)
+        for col in ("LR_ind", "p_ind", "reject_ind", "LR_cc", "p_cc", "reject_cc"):
+            assert col in result.columns
+
+    def test_reject_cc_is_bool(self, rolling_df, returns):
+        result = var_backtest(rolling_df, returns, nu=10.0)
+        assert result["reject_cc"].dtype == bool
+
+    def test_p_cc_in_unit_interval(self, rolling_df, returns):
+        result = var_backtest(rolling_df, returns, nu=10.0)
+        assert (result["p_cc"] >= 0).all()
+        assert (result["p_cc"] <= 1).all()

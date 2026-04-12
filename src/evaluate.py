@@ -12,9 +12,10 @@ Three public areas
    - evaluate_vol_forecast
    - compare_vol_forecasts
 
-3. VaR back-testing (Kupiec POF test):
+3. VaR back-testing (Kupiec POF + Christoffersen CC tests):
    - compute_var_t
    - kupiec_pof
+   - christoffersen_cc
    - var_backtest
 """
 
@@ -226,6 +227,106 @@ def kupiec_pof(T: int, x: int, alpha: float) -> dict[str, float]:
     return {"LR": float(lr), "p_value": p_value}
 
 
+def christoffersen_cc(
+    hits: np.ndarray | pd.Series,
+    alpha: float,
+) -> dict[str, float]:
+    """Christoffersen (1998) Conditional Coverage test.
+
+    Decomposes VaR model adequacy into two orthogonal components:
+
+    - **Unconditional coverage** (LR_uc): breach rate ≈ α  (χ²(1))
+    - **Independence** (LR_ind): breaches are serially independent  (χ²(1))
+    - **Conditional coverage** (LR_cc = LR_uc + LR_ind)  (χ²(2))
+
+    Parameters
+    ----------
+    hits:
+        Binary series where 1 = VaR breach on day *t*, 0 = no breach.
+        Length *T*.  The transition window uses pairs (hits[t-1], hits[t]),
+        so the effective sample is T − 1.
+    alpha:
+        Nominal VaR level (e.g. 0.01).
+
+    Returns
+    -------
+    dict with keys:
+        ``n_00``, ``n_01``, ``n_10``, ``n_11``  – transition counts,
+        ``pi_01``, ``pi_11``  – conditional breach probabilities,
+        ``LR_uc``, ``p_uc``  – unconditional coverage stat & p-value,
+        ``LR_ind``, ``p_ind``  – independence stat & p-value,
+        ``LR_cc``, ``p_cc``  – conditional coverage stat & p-value.
+
+    Notes
+    -----
+    The convention ``0 × log(0) = 0`` (via :func:`_safe_log`) avoids
+    undefined terms when a transition count is zero.
+    """
+    h = np.asarray(hits, dtype=float)
+    if h.ndim != 1 or len(h) < 2:
+        raise ValueError("hits must be a 1-D array with at least 2 elements.")
+    if not (0 < alpha < 1):
+        raise ValueError(f"alpha must be in (0, 1), got {alpha}.")
+
+    h0 = h[:-1]  # state at t-1
+    h1 = h[1:]   # state at t
+
+    n_00 = int(((h0 == 0) & (h1 == 0)).sum())
+    n_01 = int(((h0 == 0) & (h1 == 1)).sum())
+    n_10 = int(((h0 == 1) & (h1 == 0)).sum())
+    n_11 = int(((h0 == 1) & (h1 == 1)).sum())
+
+    T = len(h1)  # transition window length
+    x = n_01 + n_11  # total breaches in transition window
+
+    # Unconditional breach probability in the transition window
+    pi_hat = x / T if T > 0 else alpha
+
+    # Conditional breach probabilities
+    pi_01 = n_01 / (n_00 + n_01) if (n_00 + n_01) > 0 else 0.0
+    pi_11 = n_11 / (n_10 + n_11) if (n_10 + n_11) > 0 else 0.0
+
+    # LR_uc on transition window (same formula as Kupiec but over T)
+    if x == 0:
+        lr_uc = float(-2.0 * T * np.log(1.0 - alpha))
+    elif x == T:
+        lr_uc = float(-2.0 * T * np.log(alpha))
+    else:
+        lr_uc = float(
+            -2.0 * (x * np.log(alpha / pi_hat) + (T - x) * np.log((1 - alpha) / (1 - pi_hat)))
+        )
+
+    # LR_ind: likelihood-ratio for independence vs. unrestricted transition matrix
+    ll_restricted = (
+        x * _safe_log(pi_hat) + (T - x) * _safe_log(1.0 - pi_hat)
+    )
+    ll_unrestricted = (
+        n_01 * _safe_log(pi_01)
+        + n_00 * _safe_log(1.0 - pi_01)
+        + n_11 * _safe_log(pi_11)
+        + n_10 * _safe_log(1.0 - pi_11)
+    )
+    lr_ind = float(2.0 * (ll_unrestricted - ll_restricted))
+
+    lr_cc = lr_uc + lr_ind
+
+    p_uc = float(1.0 - chi2.cdf(lr_uc, df=1))
+    p_ind = float(1.0 - chi2.cdf(max(lr_ind, 0.0), df=1))
+    p_cc = float(1.0 - chi2.cdf(max(lr_cc, 0.0), df=2))
+
+    return {
+        "n_00": n_00, "n_01": n_01, "n_10": n_10, "n_11": n_11,
+        "pi_01": round(pi_01, 4),
+        "pi_11": round(pi_11, 4),
+        "LR_uc": round(lr_uc, 4),
+        "p_uc": round(p_uc, 4),
+        "LR_ind": round(lr_ind, 4),
+        "p_ind": round(p_ind, 4),
+        "LR_cc": round(lr_cc, 4),
+        "p_cc": round(p_cc, 4),
+    }
+
+
 def var_backtest(
     rolling_df: pd.DataFrame,
     returns: pd.Series,
@@ -233,7 +334,8 @@ def var_backtest(
     alpha_levels: list[float] | None = None,
     model_name: str = "model",
 ) -> pd.DataFrame:
-    """Run VaR back-tests at multiple confidence levels using the Kupiec POF test.
+    """Run VaR back-tests at multiple confidence levels using Kupiec POF and
+    Christoffersen Conditional Coverage tests.
 
     Parameters
     ----------
@@ -251,7 +353,8 @@ def var_backtest(
     Returns
     -------
     DataFrame with columns: model, alpha, expected_breaches, actual_breaches,
-    breach_rate, LR, p_value, reject_h0.
+    breach_rate, LR, p_value, reject_h0,
+    LR_ind, p_ind, reject_ind, LR_cc, p_cc, reject_cc.
     """
     _check_columns(rolling_df, ["predicted_volatility"])
     if alpha_levels is None:
@@ -268,8 +371,10 @@ def var_backtest(
     rows = []
     for alpha in alpha_levels:
         var_series = compute_var_t(pred_vol, nu=nu, alpha=alpha)
-        x = int((actual < -var_series).sum())
+        hits = (actual < -var_series).astype(int).to_numpy()
+        x = int(hits.sum())
         kupiec = kupiec_pof(T, x, alpha)
+        cc = christoffersen_cc(hits, alpha)
         rows.append(
             {
                 "model": model_name,
@@ -280,6 +385,12 @@ def var_backtest(
                 "LR": round(kupiec["LR"], 4),
                 "p_value": round(kupiec["p_value"], 4),
                 "reject_h0": kupiec["p_value"] < 0.05,
+                "LR_ind": cc["LR_ind"],
+                "p_ind": cc["p_ind"],
+                "reject_ind": cc["p_ind"] < 0.05,
+                "LR_cc": cc["LR_cc"],
+                "p_cc": cc["p_cc"],
+                "reject_cc": cc["p_cc"] < 0.05,
             }
         )
 
@@ -289,6 +400,11 @@ def var_backtest(
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
+
+def _safe_log(x: float) -> float:
+    """Return log(x) with the convention 0 * log(0) = 0 (returns 0 when x=0)."""
+    return float(np.log(x)) if x > 0 else 0.0
+
 
 def _check_columns(df: pd.DataFrame, required: list[str]) -> None:
     missing = [c for c in required if c not in df.columns]
