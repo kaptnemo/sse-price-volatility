@@ -22,9 +22,9 @@ With model results embedded:
     md = generate_report(
         arima_results=arima_diag,   # dict from arima_model.residual_diagnostics()
         garch_results=garch_diag,   # dict from garch_model.garch_diagnostics()
-        arima_order=(4, 1, 3),
+        arima_order=(3, 1, 4),
         garch_order=(1, 2),
-        arima_metrics={"MAE": 0.011919, "RMSE": 0.017323, "MAPE (%)": 0.14723},
+        arima_metrics={"MAE": 0.007008, "RMSE": 0.010032, "MAPE (%)": 0.086555},
         save_path="outputs/reports/report.md",
     )
 """
@@ -300,10 +300,11 @@ def _section_conclusions() -> str:
         "First-differencing yields a stationary series consistent with a random walk.\n"
         "2. **Volatility clustering**: Log-returns show highly significant ARCH effects "
         "(Ljung-Box on squared returns, p < 0.05 for all 10 lags), justifying the GARCH extension.\n"
-        "3. **ARIMA mean model** (log-close, d=1): ARIMA(4,1,3) achieves the lowest AIC "
-        "(−7380.13) on the 2016–2020 training set. Residual Ljung-Box tests confirm "
-        "white-noise residuals (all lags p > 0.05). Out-of-sample on 2021–2025: "
-        "MAE = 0.0119, RMSE = 0.0173, MAPE = 0.15 %.\n"
+        "3. **ARIMA mean model** (log-close, d=1): ARIMA(3,1,4) is selected "
+        "(AIC = −7374.61, BIC = −7333.78) after `choose_best_order` excludes the "
+        "non-converged ARIMA(4,1,3). "
+        "Residual Ljung-Box tests confirm white-noise residuals (all lags p > 0.05). "
+        "Out-of-sample on 2021–2025: MAE = 0.0070, RMSE = 0.0100, MAPE = 0.087 %.\n"
         "4. **GARCH volatility model** (log-returns): GARCH(1,2) is selected by AIC. "
         "Volatility persistence α+β = 0.99, indicating near-integrated GARCH dynamics. "
         "Squared standardized residuals show significant autocorrelation at lags 2+ "
@@ -316,13 +317,14 @@ def _section_conclusions() -> str:
         "at short lags persist in both models, pointing to higher-order or asymmetric "
         "distributional extensions as next steps.\n"
         "6. **Out-of-sample quantitative evaluation (1,211 test days)**: Predicted volatility "
-        "is evaluated against |r_t| proxy. RMSE: GARCH = 0.0081, GJR-GARCH = 0.0081 "
-        "(negligible difference). QLIKE loss (Patton 2011, scale-free): GARCH = −8.159, "
-        "GJR-GARCH = −8.178 (lower is better); GJR-GARCH is marginally preferred under QLIKE.\n"
+        "is evaluated against |r_t| proxy. RMSE: GARCH = 0.0075, GJR-GARCH = 0.0076. "
+        "QLIKE loss (Patton 2011, scale-free): GARCH = −8.348, GJR-GARCH = −8.337 "
+        "(lower is better); GARCH(1,2) is marginally preferred under both RMSE and QLIKE.\n"
         "7. **VaR backtesting (Kupiec POF test)**: Both models produce well-calibrated risk "
-        "estimates. At the 1% level: 13 breaches / 1,211 days (rate = 1.07%), "
-        "Kupiec LR = 0.065, p = 0.80 — H₀ (breach rate = nominal level) not rejected. "
-        "At the 5% level: 69 breaches (rate = 5.70%), p = 0.28 — not rejected. "
+        "estimates. GARCH 1% VaR: 12 breaches / 1,211 days (rate = 0.99%), p = 0.97 — "
+        "H₀ not rejected. GJR-GARCH 1% VaR: 11 breaches (rate = 0.91%), p = 0.74 — "
+        "not rejected. GARCH 5% VaR: 66 breaches (rate = 5.45%), p = 0.48 — not rejected. "
+        "GJR-GARCH 5% VaR: 67 breaches (rate = 5.53%), p = 0.40 — not rejected. "
         "Both GARCH and GJR-GARCH pass all four Kupiec tests.\n"
         "8. **Forecast interpretation**: Short-horizon forecasts reflect the model's "
         "learned conditional structure; they should not be interpreted as reliable "
@@ -338,8 +340,10 @@ def _section_limitations() -> str:
         "GARCH(1,2) and GJR-GARCH(1,2). GJR-GARCH improves AIC by 205 points but does "
         "not fully eliminate short-lag clustering; EGARCH or higher-order specifications "
         "may be needed.\n"
-        "- **Convergence of best ARIMA order**: ARIMA(4,1,3) is selected by AIC but "
-        "reports `converged=False`; parameter estimates should be interpreted with caution.\n"
+        "- **ARIMA order selection**: The grid-search AIC minimum is ARIMA(4,1,3) "
+        "(AIC = −7380.13) but it fails to converge; the model actually fitted is "
+        "ARIMA(3,1,4) (AIC = −7374.61, ΔAIC = 5.5). The forecast impact of this "
+        "substitution has not been formally tested.\n"
         "- **Model class**: ARIMA-GARCH assumes a linear conditional mean and a "
         "symmetric variance equation.  Asymmetric volatility responses (leverage effects) "
         "are not captured unless an asymmetric variant (e.g., GJR-GARCH, EGARCH) is used.\n"
@@ -365,8 +369,9 @@ def _section_future_improvements() -> str:
         "ARCH effects present in both current variants.\n"
         "- **Heavy-tailed distributions**: Fit the GARCH model with skewed-t "
         "innovations to better capture asymmetry and excess kurtosis (≈ 5.9).\n"
-        "- **ARIMA convergence robustness**: Compare ARIMA(4,1,3) (non-converged) with "
-        "ARIMA(3,1,4) to assess practical forecast impact of the convergence issue.\n"
+        "- **ARIMA higher-order comparison**: Although ARIMA(3,1,4) was adopted over the "
+        "non-converged ARIMA(4,1,3), a formal rolling-forecast comparison of the two "
+        "would quantify the practical impact of the ΔAIC = 5.5 gap.\n"
         "- **Regime switching**: Consider Markov-switching GARCH to capture structural breaks "
         "in volatility regimes.\n"
         "- **Multivariate extensions**: Explore VAR or DCC-GARCH to model co-movements "
